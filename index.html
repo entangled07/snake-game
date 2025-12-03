@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Adaptive Swipe Snake Game (Multiplayer High Scores)</title>
+    <title>Adaptive Swipe Snake Game (Universal Leaderboard)</title>
     <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -209,6 +209,11 @@
             color: #a7f3d0;
             font-size: 1.5rem;
         }
+        .disclaimer {
+            font-size: 0.8rem;
+            color: #a7f3d0;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -229,8 +234,9 @@
             **Swipe** on the canvas to control the snake on touch devices.
         </div>
         
+        <!-- Auth Status Display -->
         <div class="controls-info text-xs text-gray-500 mt-2">
-            User ID: <span id="userIdDisplay">Authenticating...</span>
+            Status: <span id="authStatusDisplay">Connecting...</span>
         </div>
 
         <!-- Start/Game Over Modal -->
@@ -245,12 +251,16 @@
                 
                 <!-- High Scores Display -->
                 <div id="highScoresDisplay" class="mb-4">
-                    <p class="loading-text">Loading High Scores...</p>
+                    <p class="loading-text">Loading Universal High Scores...</p>
+                </div>
+
+                <div id="configWarning" class="disclaimer hidden">
+                    Leaderboard is live! Ensure Firestore security rules allow public read/write access to 'global_snake_scores'.
                 </div>
                 
                 <!-- New High Score Input Section (Initially Hidden) -->
                 <div id="newHighScoreForm" class="hidden my-4 p-4 border border-green-500 rounded-lg bg-green-900/50">
-                    <p class="text-xl text-green-300">You set a New Global High Score!</p>
+                    <p class="text-xl text-green-300">New Universal High Score!</p>
                     <input type="text" id="playerNameInput" placeholder="Enter your name" maxlength="15" class="p-2 w-full text-base rounded bg-gray-700 text-white focus:outline-none focus:ring-2 focus:ring-green-500 my-2 font-mono" />
                     <button id="saveScoreButton" class="action-button bg-green-500 hover:bg-green-600 shadow-green-700">Save Score</button>
                 </div>
@@ -263,56 +273,59 @@
     </div>
 
     <script type="module">
-        // --- Firebase Imports ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, query, onSnapshot, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        // --- Firebase Imports (Using version 9 CDN links) ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-app.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, onSnapshot, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-firestore.js";
         
-        // setLogLevel('Debug'); // Uncomment for debugging Firestore logs
+        // =========================================================================
+        // !!! LIVE FIREBASE CONFIGURATION !!!
+        // Using the keys provided by the user for public deployment.
+        // =========================================================================
+        const FIREBASE_CONFIG = {
+          apiKey: "AIzaSyC-dV6UbbgZ4KNV8jwPGNSiZwMFF_LDQXA",
+          authDomain: "database-72f5c.firebaseapp.com",
+          projectId: "database-72f5c",
+          storageBucket: "database-72f5c.firebasestorage.app",
+          messagingSenderId: "39760475308",
+          appId: "1:39760475308:web:897ebdfaea3e052c5a9b09",
+          // measurementId: "G-Q33KN750V6" // Not strictly necessary for core functionality
+        };
+        const COLLECTION_NAME = 'global_snake_scores'; // The collection where scores are saved
+        // =========================================================================
 
-        // --- Firebase Setup ---
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // --- Firebase Globals ---
+        let db, auth;
+        let isDbReady = false;
+        let globalHighScores = [];
 
-        let app, db, auth;
-        let userId = null;
-        let isAuthReady = false;
-        
         // Game Constants
         const TILE_SIZE = 20;
         const CANVAS_SIZE = 400; 
         const MAX_COLS = CANVAS_SIZE / TILE_SIZE;
         const MAX_ROWS = CANVAS_SIZE / TILE_SIZE;
-        const COLLECTION_NAME = 'snake_high_scores';
         const MAX_HIGH_SCORES = 5;
         
-        // Speed Map (ms delay between updates: lower is faster)
+        // Speed Map
         const SPEED_MAP = {
-            'Slow': 200, 
-            'Medium': 150, 
-            'Fast': 100, 
-            'Expert': 50
+            'Slow': 200, 'Medium': 150, 'Fast': 100, 'Expert': 50
         };
         const INITIAL_SPEED_KEY = 'Medium';
         
-        // Game State
+        // --- Game State ---
         let canvas, ctx;
         let snake;
         let food;
-        let dx, dy; // Direction
+        let dx, dy;
         let score;
-        let gameLoopId;
         let lastUpdateTime;
         let gameSpeed;
         let isPaused = true;
         let nextDx = 1;
         let nextDy = 0;
         let selectedSpeedKey = INITIAL_SPEED_KEY;
-        let globalHighScores = [];
 
-        // Touch State for Swiping
+        // Touch State
         let touchStartX = 0;
         let touchStartY = 0;
         const SWIPE_THRESHOLD = 30;
@@ -329,60 +342,38 @@
         const newHighScoreFormEl = document.getElementById('newHighScoreForm');
         const playerNameInputEl = document.getElementById('playerNameInput');
         const saveScoreButton = document.getElementById('saveScoreButton');
-        const userIdDisplayEl = document.getElementById('userIdDisplay');
+        const authStatusDisplayEl = document.getElementById('authStatusDisplay');
+        const configWarningEl = document.getElementById('configWarning');
+
 
         // --- Firebase & High Score Functions ---
         
         /**
-         * Initializes Firebase and sets up the Auth state listener.
+         * Initializes Firebase and sets up anonymous authentication.
          */
         async function setupFirebase() {
             try {
-                if (Object.keys(firebaseConfig).length === 0) {
-                    console.error("Firebase config not found. High scores will not be saved.");
-                    isAuthReady = true;
-                    userId = "NO_AUTH";
-                    return;
-                }
-                
-                app = initializeApp(firebaseConfig);
+                const app = initializeApp(FIREBASE_CONFIG);
                 db = getFirestore(app);
                 auth = getAuth(app);
                 
-                onAuthStateChanged(auth, (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        userIdDisplayEl.textContent = userId;
-                        isAuthReady = true;
-                        // Start listening to high scores once authenticated
-                        listenForHighScores(); 
-                    } else {
-                        // Sign in if not authenticated
-                        attemptSignIn();
-                    }
-                });
+                authStatusDisplayEl.textContent = "Authenticating...";
+                
+                // Sign in anonymously for simple, universal access
+                await signInAnonymously(auth);
+                
+                isDbReady = true;
+                authStatusDisplayEl.textContent = "Online (Universal Leaderboard)";
+                configWarningEl.classList.remove('hidden'); // Show the success/instruction message
+                
+                // Start listening to high scores once authenticated
+                listenForHighScores(); 
+
             } catch (error) {
-                console.error("Firebase initialization failed:", error);
-            }
-        }
-        
-        /**
-         * Attempts to sign in using the custom token or anonymously.
-         */
-        async function attemptSignIn() {
-            try {
-                if (initialAuthToken) {
-                    await signInWithCustomToken(auth, initialAuthToken);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("Firebase sign-in failed:", error);
-                userId = "AUTH_ERROR";
-                userIdDisplayEl.textContent = "AUTH_ERROR";
-                isAuthReady = true;
-                // Still try to display an empty score list if authentication fails
-                displayHighScores(); 
+                console.error("Firebase initialization or sign-in failed:", error);
+                isDbReady = false;
+                authStatusDisplayEl.textContent = "OFFLINE (DB Error)";
+                highScoresDisplayEl.innerHTML = '<p class="text-red-400">Failed to connect to leaderboard. Check console/security rules.</p>';
             }
         }
 
@@ -390,37 +381,31 @@
          * Listens to real-time updates for the top 5 scores from Firestore.
          */
         function listenForHighScores() {
-            if (!db || !isAuthReady) return;
+            if (!db || !isDbReady) return;
 
-            // Path for public/shared data: /artifacts/{appId}/public/data/snake_high_scores
-            const scoresRef = collection(db, `artifacts/${appId}/public/data/${COLLECTION_NAME}`);
-            
-            // To emulate 'orderBy' and 'limit' without using them (due to index issues):
-            // We fetch all available docs and sort/limit client-side.
-            // A dedicated field for sorting is still needed. Let's assume 'score' is that field.
-            
-            const q = query(scoresRef);
+            try {
+                const scoresRef = collection(db, COLLECTION_NAME);
+                
+                // Query for the top 5 scores ordered by score descending
+                const q = query(scoresRef, orderBy("score", "desc"), limit(MAX_HIGH_SCORES));
 
-            onSnapshot(q, (snapshot) => {
-                let scores = [];
-                snapshot.forEach(doc => {
-                    scores.push(doc.data());
+                onSnapshot(q, (snapshot) => {
+                    globalHighScores = [];
+                    snapshot.forEach(doc => {
+                        globalHighScores.push(doc.data());
+                    });
+                    
+                    // Update the display only if the modal is visible
+                    if (modalEl.style.display !== 'none') {
+                        displayHighScores();
+                    }
+                }, (error) => {
+                    console.error("Error listening to high scores:", error);
+                    highScoresDisplayEl.innerHTML = '<p class="text-red-400">Failed to load scores. Check database path and rules.</p>';
                 });
-
-                // 1. Sort by score descending
-                scores.sort((a, b) => b.score - a.score);
-                
-                // 2. Limit to top 5
-                globalHighScores = scores.slice(0, MAX_HIGH_SCORES);
-                
-                // 3. Update the display only if the modal is visible
-                if (modalEl.style.display !== 'none') {
-                    displayHighScores();
-                }
-            }, (error) => {
-                console.error("Error listening to high scores:", error);
-                highScoresDisplayEl.innerHTML = '<p class="text-red-400">Failed to load scores.</p>';
-            });
+            } catch (e) {
+                 console.error("Error setting up score listener:", e);
+            }
         }
         
         /**
@@ -430,7 +415,7 @@
             const scores = globalHighScores;
             
             if (scores.length === 0) {
-                highScoresDisplayEl.innerHTML = '<p class="text-gray-400">No high scores yet! Be the first.</p>';
+                highScoresDisplayEl.innerHTML = '<p class="text-gray-400">No universal high scores yet! Be the first.</p>';
                 return;
             }
 
@@ -448,7 +433,6 @@
             `;
             
             scores.forEach((record, index) => {
-                // Ensure name and speed are capitalized for style
                 const name = (record.name || 'Anonymous').toUpperCase();
                 const speed = record.speed || 'N/A';
 
@@ -467,19 +451,30 @@
         }
 
         /**
-         * Checks if the current score qualifies for the top 5 and updates the list.
-         * Shows the name input form if the score is a high score.
+         * Checks if the current score qualifies for the top 5.
+         */
+        function isNewHighScore() {
+            if (!isDbReady) return false; 
+            
+            // Check if there are fewer than MAX_HIGH_SCORES scores
+            if (globalHighScores.length < MAX_HIGH_SCORES) return true;
+            
+            // Check if the current score is higher than the lowest score on the list
+            return score > globalHighScores[globalHighScores.length - 1].score;
+        }
+        
+        /**
+         * Handles high score submission flow.
          */
         function checkAndHandleHighScore() {
-            const isHighScore = globalHighScores.length < MAX_HIGH_SCORES || score > globalHighScores[globalHighScores.length - 1].score;
+            const qualified = isNewHighScore();
 
-            if (isHighScore) {
+            if (qualified) {
                 // Show form to save name
                 newHighScoreFormEl.classList.remove('hidden');
-                playerNameInputEl.value = ''; // Clear previous input
+                playerNameInputEl.value = '';
                 playerNameInputEl.focus();
 
-                // Detach old listener, attach new one for saving
                 saveScoreButton.onclick = submitHighScore;
 
                 modalTextEl.textContent = 'Enter your name to save your score!';
@@ -492,7 +487,6 @@
                 startButton.textContent = "Play Again";
             }
             
-            // Ensure the latest scores are displayed
             displayHighScores();
         }
         
@@ -500,9 +494,8 @@
          * Saves the player's name and score to the global high score collection.
          */
         async function submitHighScore() {
-            if (!isAuthReady || !db) {
-                console.warn("Database not ready or authentication failed. Score not saved.");
-                alert("Cannot save score: Database connection failed."); // Using custom modal in real app
+            if (!isDbReady) {
+                console.error("Database not ready. Cannot save score.");
                 return;
             }
             
@@ -515,33 +508,28 @@
                 name: name,
                 score: score,
                 speed: selectedSpeedKey,
-                userId: userId,
-                timestamp: serverTimestamp() // Adds server-side timestamp
+                timestamp: serverTimestamp()
             };
             
             try {
-                const scoresRef = collection(db, `artifacts/${appId}/public/data/${COLLECTION_NAME}`);
+                const scoresRef = collection(db, COLLECTION_NAME);
                 await addDoc(scoresRef, newRecord);
                 
                 // Reset modal state after saving
                 newHighScoreFormEl.classList.add('hidden');
-                modalTextEl.innerHTML = `Score saved! Your Final Score: <strong style="color:var(--score-color);">${score}</strong>.`;
+                modalTextEl.innerHTML = `Score saved globally! Your Final Score: <strong style="color:var(--score-color);">${score}</strong>.`;
                 startButton.textContent = "Play Again";
-                // The onSnapshot listener will automatically update the displayed scores
             } catch (e) {
                 console.error("Error saving high score:", e);
-                modalTextEl.innerHTML = `Error saving score. Try again: <strong style="color:var(--score-color);">${score}</strong>.`;
+                modalTextEl.innerHTML = `Error saving score to database. Please check your Firestore security rules.`;
             }
         }
 
 
-        // --- UI and Game Logic (Unchanged from previous version, adapted for Firebase) ---
+        // --- UI and Game Logic ---
 
-        /**
-         * Renders the speed selection radio buttons in the modal.
-         */
         function renderSpeedSelector() {
-            speedSelectorEl.innerHTML = ''; // Clear previous buttons
+            speedSelectorEl.innerHTML = ''; 
             
             Object.keys(SPEED_MAP).forEach(key => {
                 const isChecked = key === INITIAL_SPEED_KEY;
@@ -566,20 +554,16 @@
                 speedSelectorEl.appendChild(radioInput);
                 speedSelectorEl.appendChild(label);
             });
-            // Ensure the initial state is set
             selectedSpeedKey = INITIAL_SPEED_KEY;
         }
         
-        /**
-         * Initializes the game state and event listeners.
-         */
         function init() {
             canvas = document.getElementById('gameCanvas');
             ctx = canvas.getContext('2d');
             canvas.width = CANVAS_SIZE;
             canvas.height = CANVAS_SIZE;
             
-            setupFirebase(); // Start Firebase and Auth setup
+            setupFirebase(); // Initialize Firebase
 
             renderSpeedSelector();
             resetGame();
@@ -591,13 +575,9 @@
             canvas.addEventListener('touchend', handleTouchEnd);
             startButton.addEventListener('click', startGame);
 
-            // Initial Draw to show the board
             draw();
         }
 
-        /**
-         * Resets the snake, food, score, and direction.
-         */
         function resetGame() {
             snake = [
                 { x: 6, y: 10 },
@@ -616,17 +596,12 @@
             speedValueEl.textContent = selectedSpeedKey;
             
             spawnFood();
-            
-            if (gameLoopId) {
-                clearInterval(gameLoopId);
-            }
         }
 
-        /**
-         * Main game loop that updates the game state.
-         */
         function mainLoop(timestamp) {
             if (isPaused) return;
+
+            if (!lastUpdateTime) lastUpdateTime = timestamp;
 
             if (timestamp - lastUpdateTime < gameSpeed) {
                 requestAnimationFrame(mainLoop);
@@ -643,9 +618,6 @@
             requestAnimationFrame(mainLoop);
         }
         
-        /**
-         * Starts the game loop.
-         */
         function startGame() {
             gameSpeed = SPEED_MAP[selectedSpeedKey] || SPEED_MAP[INITIAL_SPEED_KEY];
             speedValueEl.textContent = selectedSpeedKey;
@@ -657,28 +629,15 @@
             requestAnimationFrame(mainLoop);
         }
 
-        /**
-         * Displays the game over modal.
-         */
         function gameOver() {
             isPaused = true;
             modalTitleEl.textContent = "Game Over!";
             
-            // Check for high score and update modal content
-            if (isAuthReady) {
-                checkAndHandleHighScore();
-            } else {
-                 modalTextEl.innerHTML = `Your Final Score: <strong style="color:var(--score-color);">${score}</strong>.<br>Scores not saved: Authentication not ready.`;
-                 startButton.textContent = "Play Again";
-                 displayHighScores();
-            }
+            checkAndHandleHighScore();
             
             modalEl.style.display = 'flex';
         }
 
-        /**
-         * Generates food coordinates randomly, ensuring it doesn't overlap with the snake.
-         */
         function spawnFood() {
             let newFood;
             let occupied;
@@ -695,9 +654,6 @@
             food = newFood;
         }
 
-        /**
-         * Updates the position of the snake and checks for collisions (wall and self only).
-         */
         function update() {
             const head = { x: snake[0].x + dx, y: snake[0].y + dy };
 
@@ -728,9 +684,6 @@
             }
         }
 
-        /**
-         * Draws the game elements on the canvas.
-         */
         function draw() {
             ctx.fillStyle = '#2c3648';
             ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
@@ -750,8 +703,6 @@
             ctx.arc(foodCenterX, foodCenterY, TILE_SIZE / 2 * 0.7, 0, 2 * Math.PI);
             ctx.fill();
         }
-
-        // --- Input Handling (Keyboard and Touch) ---
 
         function handleKeyPress(event) {
             if (isPaused) {
@@ -828,7 +779,6 @@
             touchStartY = 0;
         }
 
-        // Start the application setup
         window.onload = init;
     </script>
 </body>
