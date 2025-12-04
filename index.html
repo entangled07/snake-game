@@ -220,7 +220,12 @@
             color: #a7f3d0;
             margin-top: 10px;
         }
+        .hidden {
+            display: none;
+        }
     </style>
+    <!-- Tone.js for in-browser sound generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
 </head>
 <body>
 
@@ -244,6 +249,11 @@
         <div class="controls-info text-xs text-gray-500 mt-2">
             Status: <span id="authStatusDisplay">Connecting...</span>
         </div>
+        
+        <!-- Audio Context Activation Button (Hidden after activation) -->
+        <button id="audio-start-btn" class="action-button" style="margin-top:10px; display:none;">
+            Click to Enable Sound
+        </button>
 
         <!-- Start/Game Over Modal -->
         <div id="gameModal" class="modal">
@@ -330,6 +340,11 @@
         let nextDy = 0;
         let selectedSpeedKey = INITIAL_SPEED_KEY;
 
+        // Tone.js Sound Objects
+        let synth;
+        let bassSynth;
+        let audioContextStarted = false;
+
         // Touch State
         let touchStartX = 0;
         let touchStartY = 0;
@@ -349,7 +364,78 @@
         const saveScoreButton = document.getElementById('saveScoreButton');
         const authStatusDisplayEl = document.getElementById('authStatusDisplay');
         const configWarningEl = document.getElementById('configWarning');
+        const audioStartButton = document.getElementById('audio-start-btn');
 
+
+        // --- Audio Functions ---
+
+        /**
+         * Initializes Tone.js synths with smoother settings.
+         */
+        function initAudio() {
+            // Main Synth for pickup and start sounds (using sine for a clean, pleasing tone)
+            synth = new Tone.PolySynth(Tone.Synth, {
+                oscillator: { type: "sine" }, // Sine wave for non-sharp tone
+                envelope: {
+                    attack: 0.01, // Quick attack
+                    decay: 0.1,
+                    sustain: 0.0, // No sustain for a short pulse
+                    release: 0.1,
+                }
+            }).toDestination();
+
+            // Game Over Sound (Monophonic Synth with a low frequency - the sound you liked)
+            bassSynth = new Tone.Synth({
+                oscillator: { type: "sawtooth" },
+                envelope: {
+                    attack: 0.01,
+                    decay: 0.8,
+                    sustain: 0,
+                    release: 0.5
+                }
+            }).toDestination();
+            
+            audioContextStarted = true;
+        }
+
+        /**
+         * Plays the food pickup sound (single, clean, low-mid tone for a classic "coin" effect).
+         */
+        function playFoodSound() {
+            if (!audioContextStarted) return;
+            // Single, clean, mid-range sine note (C5) with a very short duration.
+            synth.triggerAttackRelease("C5", "64n");
+        }
+
+        /**
+         * Plays the game start sound (quick, descending ready tone).
+         */
+        function playStartSound() {
+            if (!audioContextStarted) return;
+            const now = Tone.now();
+            // Distinct descending tone (C5 then G4)
+            synth.triggerAttackRelease("C5", "16n", now);
+            synth.triggerAttackRelease("G4", "16n", now + 0.08);
+        }
+
+        /**
+         * Plays the game over sound. (The approved sound)
+         */
+        function playGameOverSound() {
+            if (!audioContextStarted) return;
+            bassSynth.triggerAttackRelease("C2", "1n");
+        }
+        
+        /**
+         * Handles the click to start the AudioContext on the user's first interaction.
+         */
+        function startAudioContext() {
+            if (Tone.context.state !== 'running') {
+                Tone.start();
+            }
+            initAudio();
+            audioStartButton.style.display = 'none';
+        }
 
         // --- Firebase & High Score Functions ---
         
@@ -358,6 +444,7 @@
          */
         function setupFirebase() {
             try {
+                // Initialize using the provided config
                 const app = initializeApp(FIREBASE_CONFIG);
                 db = getFirestore(app);
                 auth = getAuth(app);
@@ -400,12 +487,12 @@
                 const scoresRef = collection(db, COLLECTION_NAME);
                 
                 // Query for the top 5 scores ordered by score descending
-                const q = query(scoresRef, orderBy("score", "desc"), limit(MAX_HIGH_SCORES));
+                // Sorting will be done in memory to avoid needing a Firestore index on 'score'.
+                const q = query(scoresRef, limit(10)); // Fetch slightly more to ensure we have data, then sort in memory
 
                 onSnapshot(q, (snapshot) => {
                     globalHighScores = [];
                     snapshot.forEach(doc => {
-                        // Ensure we safely handle the timestamp field if it hasn't processed yet
                         const data = doc.data();
                         globalHighScores.push({
                             id: doc.id,
@@ -416,6 +503,12 @@
                         });
                     });
                     
+                    // Sort the scores in memory since we avoided orderBy in the query
+                    globalHighScores.sort((a, b) => b.score - a.score);
+                    
+                    // Truncate to the top 5
+                    globalHighScores = globalHighScores.slice(0, MAX_HIGH_SCORES);
+
                     // Update the display whenever data changes or when the modal is first shown
                     if (modalEl.style.display !== 'none' || globalHighScores.length > 0) {
                         displayHighScores();
@@ -498,16 +591,20 @@
                 playerNameInputEl.focus();
 
                 // Set the click handler for the save button
-                saveScoreButton.onclick = submitHighScore;
-
-                modalTextEl.textContent = 'Enter your name to save your score!';
                 startButton.textContent = "Continue Without Saving";
+                startButton.onclick = () => {
+                    newHighScoreFormEl.classList.add('hidden');
+                    modalTextEl.innerHTML = `Your Final Score: <strong style="color:var(--score-color);">${score}</strong>. Keep trying!`;
+                    startButton.textContent = "Play Again";
+                    startButton.onclick = startGame;
+                }
                 
             } else {
                 // Not a high score
                 newHighScoreFormEl.classList.add('hidden');
                 modalTextEl.innerHTML = `Your Final Score: <strong style="color:var(--score-color);">${score}</strong>. Keep trying!`;
                 startButton.textContent = "Play Again";
+                startButton.onclick = startGame;
             }
             
             displayHighScores();
@@ -546,9 +643,12 @@
                 newHighScoreFormEl.classList.add('hidden');
                 modalTextEl.innerHTML = `Score saved globally! Your Final Score: <strong style="color:var(--score-color);">${score}</strong>.`;
                 startButton.textContent = "Play Again";
+                startButton.onclick = startGame;
             } catch (e) {
                 console.error("Error saving high score:", e);
                 modalTextEl.innerHTML = `Error saving score to database: ${e.message}. Please check your Firestore security rules.`;
+                startButton.textContent = "Play Again";
+                startButton.onclick = startGame;
             } finally {
                 // Re-enable button
                 saveScoreButton.disabled = false;
@@ -595,6 +695,14 @@
             canvas.height = CANVAS_SIZE;
             
             setupFirebase(); // Initialize Firebase and Authentication
+            
+            // Check if audio context needs explicit start
+            if (window.Tone && Tone.context.state !== 'running') {
+                 audioStartButton.style.display = 'block';
+                 audioStartButton.addEventListener('click', startAudioContext, { once: true });
+            } else if (window.Tone) {
+                 initAudio();
+            }
 
             renderSpeedSelector();
             resetGame();
@@ -605,6 +713,7 @@
             canvas.addEventListener('touchmove', handleTouchMove);
             canvas.addEventListener('touchend', handleTouchEnd);
             startButton.addEventListener('click', startGame);
+            saveScoreButton.addEventListener('click', submitHighScore);
 
             // Initial draw to show the board
             draw();
@@ -666,6 +775,13 @@
             gameSpeed = SPEED_MAP[selectedSpeedKey];
             speedValueEl.textContent = selectedSpeedKey;
             
+            // Ensure audio is running when starting
+            if (window.Tone && !audioContextStarted) {
+                startAudioContext(); 
+            }
+            
+            playStartSound(); // Play the start sound
+
             modalEl.style.display = 'none';
             resetGame(); 
             isPaused = false;
@@ -675,6 +791,7 @@
 
         function gameOver() {
             isPaused = true;
+            playGameOverSound(); // Play game over sound
             modalTitleEl.textContent = "Game Over!";
             
             checkAndHandleHighScore();
@@ -725,6 +842,7 @@
                 score += 10;
                 scoreValueEl.textContent = score;
                 
+                playFoodSound(); // Play food sound
                 spawnFood();
             } else {
                 // Remove the tail if no food was eaten
@@ -763,8 +881,8 @@
                     if (newHighScoreFormEl.classList.contains('hidden')) {
                         // Start game if on the main start screen
                         startGame();
-                    } else if (event.key === 'Enter' && playerNameInputEl.value.trim() !== '') {
-                        // Save score if on the high score form and name is entered
+                    } else if (event.key === 'Enter' && newHighScoreFormEl.classList.contains('hidden') === false) {
+                        // Save score if on the high score form and Enter is pressed
                         submitHighScore();
                     }
                 }
