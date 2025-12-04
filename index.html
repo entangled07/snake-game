@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Adaptive Swipe Snake Game (Universal Leaderboard)</title>
+    
+    <!-- PWA FIX: These lines link the HTML to the manifest and icons -->
+    <meta name="theme-color" content="#10b981">
+    <link rel="manifest" href="manifest.json"> 
+    <link rel="apple-touch-icon" href="apple-touch-icon.png"> 
+
     <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -275,7 +281,7 @@
     <script type="module">
         // --- Firebase Imports (Using version 9 CDN links) ---
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-app.js";
-        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-auth.js";
         import { getFirestore, collection, addDoc, query, onSnapshot, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/9.6.11/firebase-firestore.js";
         
         // =========================================================================
@@ -289,7 +295,6 @@
           storageBucket: "database-72f5c.firebasestorage.app",
           messagingSenderId: "39760475308",
           appId: "1:39760475308:web:897ebdfaea3e052c5a9b09",
-          // measurementId: "G-Q33KN750V6" // Not strictly necessary for core functionality
         };
         const COLLECTION_NAME = 'global_snake_scores'; // The collection where scores are saved
         // =========================================================================
@@ -351,7 +356,7 @@
         /**
          * Initializes Firebase and sets up anonymous authentication.
          */
-        async function setupFirebase() {
+        function setupFirebase() {
             try {
                 const app = initializeApp(FIREBASE_CONFIG);
                 db = getFirestore(app);
@@ -359,20 +364,28 @@
                 
                 authStatusDisplayEl.textContent = "Authenticating...";
                 
-                // Sign in anonymously for simple, universal access
-                await signInAnonymously(auth);
-                
-                isDbReady = true;
-                authStatusDisplayEl.textContent = "Online (Universal Leaderboard)";
-                configWarningEl.classList.remove('hidden'); // Show the success/instruction message
-                
-                // Start listening to high scores once authenticated
-                listenForHighScores(); 
+                // Use onAuthStateChanged to ensure user is ready before using DB
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        isDbReady = true;
+                        authStatusDisplayEl.textContent = "Online (Universal Leaderboard)";
+                        configWarningEl.classList.remove('hidden'); // Show the instruction message
+                        listenForHighScores(); 
+                    } else {
+                        // If no user, sign in anonymously
+                        signInAnonymously(auth).catch(error => {
+                            console.error("Firebase sign-in failed:", error);
+                            isDbReady = false;
+                            authStatusDisplayEl.textContent = "OFFLINE (Auth Error)";
+                            highScoresDisplayEl.innerHTML = '<p class="text-red-400">Failed to connect to leaderboard. Check console/security rules.</p>';
+                        });
+                    }
+                });
 
             } catch (error) {
-                console.error("Firebase initialization or sign-in failed:", error);
+                console.error("Firebase initialization failed:", error);
                 isDbReady = false;
-                authStatusDisplayEl.textContent = "OFFLINE (DB Error)";
+                authStatusDisplayEl.textContent = "OFFLINE (Config Error)";
                 highScoresDisplayEl.innerHTML = '<p class="text-red-400">Failed to connect to leaderboard. Check console/security rules.</p>';
             }
         }
@@ -392,11 +405,19 @@
                 onSnapshot(q, (snapshot) => {
                     globalHighScores = [];
                     snapshot.forEach(doc => {
-                        globalHighScores.push(doc.data());
+                        // Ensure we safely handle the timestamp field if it hasn't processed yet
+                        const data = doc.data();
+                        globalHighScores.push({
+                            id: doc.id,
+                            name: data.name,
+                            score: data.score,
+                            speed: data.speed,
+                            timestamp: data.timestamp ? data.timestamp.toDate() : new Date()
+                        });
                     });
                     
-                    // Update the display only if the modal is visible
-                    if (modalEl.style.display !== 'none') {
+                    // Update the display whenever data changes or when the modal is first shown
+                    if (modalEl.style.display !== 'none' || globalHighScores.length > 0) {
                         displayHighScores();
                     }
                 }, (error) => {
@@ -456,10 +477,11 @@
         function isNewHighScore() {
             if (!isDbReady) return false; 
             
-            // Check if there are fewer than MAX_HIGH_SCORES scores
+            // If the list is not full, any score is a high score
             if (globalHighScores.length < MAX_HIGH_SCORES) return true;
             
             // Check if the current score is higher than the lowest score on the list
+            // Scores are sorted DESC, so the last element has the lowest score.
             return score > globalHighScores[globalHighScores.length - 1].score;
         }
         
@@ -475,6 +497,7 @@
                 playerNameInputEl.value = '';
                 playerNameInputEl.focus();
 
+                // Set the click handler for the save button
                 saveScoreButton.onclick = submitHighScore;
 
                 modalTextEl.textContent = 'Enter your name to save your score!';
@@ -504,24 +527,32 @@
                 name = 'ANON';
             }
             
+            // Prevent double submission by disabling the button temporarily
+            saveScoreButton.disabled = true;
+            saveScoreButton.textContent = 'Saving...';
+
             const newRecord = {
                 name: name,
                 score: score,
                 speed: selectedSpeedKey,
-                timestamp: serverTimestamp()
+                timestamp: serverTimestamp() // Use server timestamp for accurate ordering
             };
             
             try {
                 const scoresRef = collection(db, COLLECTION_NAME);
                 await addDoc(scoresRef, newRecord);
                 
-                // Reset modal state after saving
+                // Success feedback and reset modal state
                 newHighScoreFormEl.classList.add('hidden');
                 modalTextEl.innerHTML = `Score saved globally! Your Final Score: <strong style="color:var(--score-color);">${score}</strong>.`;
                 startButton.textContent = "Play Again";
             } catch (e) {
                 console.error("Error saving high score:", e);
-                modalTextEl.innerHTML = `Error saving score to database. Please check your Firestore security rules.`;
+                modalTextEl.innerHTML = `Error saving score to database: ${e.message}. Please check your Firestore security rules.`;
+            } finally {
+                // Re-enable button
+                saveScoreButton.disabled = false;
+                saveScoreButton.textContent = 'Save Score';
             }
         }
 
@@ -563,7 +594,7 @@
             canvas.width = CANVAS_SIZE;
             canvas.height = CANVAS_SIZE;
             
-            setupFirebase(); // Initialize Firebase
+            setupFirebase(); // Initialize Firebase and Authentication
 
             renderSpeedSelector();
             resetGame();
@@ -575,6 +606,7 @@
             canvas.addEventListener('touchend', handleTouchEnd);
             startButton.addEventListener('click', startGame);
 
+            // Initial draw to show the board
             draw();
         }
 
@@ -587,7 +619,7 @@
 
             dx = 1;
             dy = 0;
-            nextDx = 1;
+            nextDx = 1; // Initial direction is right
             nextDy = 0;
             score = 0;
             isPaused = true;
@@ -601,14 +633,20 @@
         function mainLoop(timestamp) {
             if (isPaused) return;
 
+            // Set game speed based on selection
+            gameSpeed = SPEED_MAP[selectedSpeedKey] || SPEED_MAP[INITIAL_SPEED_KEY];
+
+
             if (!lastUpdateTime) lastUpdateTime = timestamp;
 
+            // Only update game state if enough time has passed based on gameSpeed
             if (timestamp - lastUpdateTime < gameSpeed) {
                 requestAnimationFrame(mainLoop);
                 return;
             }
             lastUpdateTime = timestamp;
             
+            // Apply the next direction change
             dx = nextDx;
             dy = nextDy;
 
@@ -619,7 +657,13 @@
         }
         
         function startGame() {
-            gameSpeed = SPEED_MAP[selectedSpeedKey] || SPEED_MAP[INITIAL_SPEED_KEY];
+            // Re-evaluate game speed based on the currently selected radio button
+            const selectedRadio = document.querySelector('input[name="game-speed"]:checked');
+            if (selectedRadio) {
+                selectedSpeedKey = selectedRadio.value;
+            }
+            
+            gameSpeed = SPEED_MAP[selectedSpeedKey];
             speedValueEl.textContent = selectedSpeedKey;
             
             modalEl.style.display = 'none';
@@ -647,6 +691,7 @@
                     y: Math.floor(Math.random() * MAX_ROWS)
                 };
 
+                // Check if the new food location overlaps with the snake
                 occupied = snake.some(segment => segment.x === newFood.x && segment.y === newFood.y);
                 
             } while (occupied);
@@ -655,12 +700,16 @@
         }
 
         function update() {
+            // Calculate the new head position
             const head = { x: snake[0].x + dx, y: snake[0].y + dy };
 
+            // Check for wall collision
             const wallCollision = head.x < 0 || head.x >= MAX_COLS || head.y < 0 || head.y >= MAX_ROWS;
             
+            // Check for self collision (check new head against all existing segments)
             const selfCollision = snake.some((segment, index) => 
-                index !== 0 && segment.x === head.x && segment.y === head.y
+                // A collision occurs if the new head location matches any existing segment location
+                segment.x === head.x && segment.y === head.y
             );
 
             if (wallCollision || selfCollision) {
@@ -668,76 +717,88 @@
                 return;
             }
 
+            // Move the snake by adding the new head
             snake.unshift(head);
 
+            // Check if food was eaten
             if (head.x === food.x && head.y === food.y) {
                 score += 10;
                 scoreValueEl.textContent = score;
                 
-                if (score % 50 === 0 && gameSpeed > SPEED_MAP['Expert']) {
-                    gameSpeed -= 10; 
-                }
-
                 spawnFood();
             } else {
+                // Remove the tail if no food was eaten
                 snake.pop();
             }
         }
 
         function draw() {
+            // Clear the canvas
             ctx.fillStyle = '#2c3648';
             ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
+            // Draw the snake
             snake.forEach((segment, index) => {
-                ctx.fillStyle = index === 0 ? '#059669' : 'var(--snake-color)'; 
+                ctx.fillStyle = index === 0 ? '#059669' : 'var(--snake-color)'; // Darker head
                 ctx.strokeStyle = '#2c3648';
                 
                 ctx.fillRect(segment.x * TILE_SIZE, segment.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
                 ctx.strokeRect(segment.x * TILE_SIZE, segment.y * TILE_SIZE, TILE_SIZE, TILE_SIZE);
             });
 
+            // Draw the food (circle)
             ctx.fillStyle = 'var(--food-color)';
             ctx.beginPath();
             const foodCenterX = food.x * TILE_SIZE + TILE_SIZE / 2;
             const foodCenterY = food.y * TILE_SIZE + TILE_SIZE / 2;
-            ctx.arc(foodCenterX, foodCenterY, TILE_SIZE / 2 * 0.7, 0, 2 * Math.PI);
+            // Draw a smaller circle for a more retro look
+            ctx.arc(foodCenterX, foodCenterY, TILE_SIZE / 2 * 0.7, 0, 2 * Math.PI); 
             ctx.fill();
         }
 
         function handleKeyPress(event) {
+            // Handle modal actions on key press (Space/Enter)
             if (isPaused) {
                 if (event.key === ' ' || event.key === 'Enter') {
                     if (newHighScoreFormEl.classList.contains('hidden')) {
+                        // Start game if on the main start screen
                         startGame();
-                    } else if (event.key === 'Enter') {
+                    } else if (event.key === 'Enter' && playerNameInputEl.value.trim() !== '') {
+                        // Save score if on the high score form and name is entered
                         submitHighScore();
                     }
                 }
                 return;
             }
 
-            const key = event.key;
+            // Handle game direction change
+            const key = event.key.toLowerCase();
             const goingUp = dy === -1;
             const goingDown = dy === 1;
             const goingRight = dx === 1;
             const goingLeft = dx === -1;
-
-            if ((key === 'ArrowLeft' || key === 'a') && !goingRight) {
+            
+            // Determine the next direction, preventing immediate reverse turns
+            if ((key === 'arrowleft' || key === 'a') && !goingRight) {
                 nextDx = -1; nextDy = 0;
-            } else if ((key === 'ArrowUp' || key === 'w') && !goingDown) {
+            } else if ((key === 'arrowup' || key === 'w') && !goingDown) {
                 nextDx = 0; nextDy = -1;
-            } else if ((key === 'ArrowRight' || key === 'd') && !goingLeft) {
+            } else if ((key === 'arrowright' || key === 'd') && !goingLeft) {
                 nextDx = 1; nextDy = 0;
-            } else if ((key === 'ArrowDown' || key === 's') && !goingUp) {
+            } else if ((key === 'arrowdown' || key === 's') && !goingUp) {
                 nextDx = 0; nextDy = 1;
             }
         }
+
+        // --- Touch/Swipe Handlers ---
 
         function handleTouchStart(event) {
             if (isPaused) return;
             const touch = event.touches[0];
             touchStartX = touch.clientX;
             touchStartY = touch.clientY;
+            // Prevent scrolling when touch starts on the canvas
+            event.preventDefault();
         }
 
         function handleTouchMove(event) {
@@ -747,30 +808,37 @@
             const diffX = touch.clientX - touchStartX;
             const diffY = touch.clientY - touchStartY;
 
+            // Only register swipe if distance exceeds threshold
             if (Math.abs(diffX) > SWIPE_THRESHOLD || Math.abs(diffY) > SWIPE_THRESHOLD) {
+                
                 const goingUp = dy === -1;
                 const goingDown = dy === 1;
                 const goingRight = dx === 1;
                 const goingLeft = dx === -1;
 
+                // Check for horizontal or vertical dominance
                 if (Math.abs(diffX) > Math.abs(diffY)) {
-                    if (diffX > 0 && !goingLeft) {
+                    // Horizontal swipe
+                    if (diffX > 0 && !goingLeft) { // Swiped Right
                         nextDx = 1; nextDy = 0;
-                    } else if (diffX < 0 && !goingRight) {
+                    } else if (diffX < 0 && !goingRight) { // Swiped Left
                         nextDx = -1; nextDy = 0;
                     }
                 } else {
-                    if (diffY > 0 && !goingUp) {
+                    // Vertical swipe
+                    if (diffY > 0 && !goingUp) { // Swiped Down
                         nextDx = 0; nextDy = 1;
-                    } else if (diffY < 0 && !goingDown) {
+                    } else if (diffY < 0 && !goingDown) { // Swiped Up
                         nextDx = 0; nextDy = -1;
                     }
                 }
                 
+                // Reset touch start points to prevent rapid, unintended direction changes
                 touchStartX = touch.clientX;
                 touchStartY = touch.clientY;
             }
             
+            // Prevent default behavior (like scrolling) during touch move
             event.preventDefault();
         }
         
@@ -778,7 +846,8 @@
             touchStartX = 0;
             touchStartY = 0;
         }
-
+        
+        // Start the game initialization when the window loads
         window.onload = init;
     </script>
 </body>
