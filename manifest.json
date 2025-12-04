@@ -2,21 +2,22 @@
   "name": "Snake Swipe Game",
   "short_name": "Snake Swipe",
   "description": "Adaptive Swipe Snake Game with Universal Leaderboard.",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": ".",
+  "scope": ".",
   "display": "standalone",
-  "background_color": "#282c34",
-  "theme_color": "#009688",
+  "background_color": "#0f172a",
+  "theme_color": "#10b981",
   "icons": [
     {
-      "src": "/snake-swipe-192x192.png",
+      "src": "snake-icon-192.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "/snake-swipe-512x512.png",
+      "src": "snake-icon-512.png",
       "sizes": "512x512",
       "type": "image/png"
     }
   ]
 }
+
