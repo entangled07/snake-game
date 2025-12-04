@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Adaptive Swipe Snake Game (Universal Leaderboard)</title>
     
-    <!-- PWA FIX: These lines link the HTML to the manifest and icons -->
+    <!-- PWA MANDATORY LINKS -->
     <meta name="theme-color" content="#10b981">
     <link rel="manifest" href="manifest.json"> 
     <link rel="apple-touch-icon" href="apple-touch-icon.png"> 
@@ -849,6 +849,13 @@
         
         // Start the game initialization when the window loads
         window.onload = init;
+    </script>
+    
+    <!-- Service Worker Registration Script -->
+    <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("service-worker.js");
+    }
     </script>
 </body>
 </html>
